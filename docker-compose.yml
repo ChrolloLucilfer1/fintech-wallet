@@ -1,0 +1,83 @@
+services:
+  mongo:
+    image: mongo:7
+    container_name: wallet_mongo
+    restart: unless-stopped
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh --quiet
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mongo-init:
+    image: mongo:7
+    container_name: wallet_mongo_init
+    depends_on:
+      mongo:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: >
+      mongosh --host mongo:27017 --eval
+      "
+      try {
+        rs.status();
+        print('Replica set already initiated.');
+      } catch (e) {
+        rs.initiate({
+          _id: 'rs0',
+          members: [{ _id: 0, host: 'mongo:27017' }]
+        });
+        print('Replica set initiated.');
+      }
+      "
+
+  redis:
+    image: redis:7-alpine
+    container_name: wallet_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  backend:
+    build:
+      context: ./backend
+    container_name: wallet_backend
+    restart: unless-stopped
+    depends_on:
+      mongo-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+    ports:
+      - "5000:5000"
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+      CLIENT_ORIGIN: http://localhost:5173
+      MONGO_URI: mongodb://mongo:27017/fintech_wallet?replicaSet=rs0
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ""
+      USE_IN_MEMORY_CACHE: "false"
+      ACCESS_TOKEN_SECRET: ${ACCESS_TOKEN_SECRET}
+      REFRESH_TOKEN_SECRET: ${REFRESH_TOKEN_SECRET}
+      ACCESS_TOKEN_EXPIRY: 15m
+      REFRESH_TOKEN_EXPIRY: 7d
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: wallet_frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "5173:80"
+
+volumes:
+  mongo_data:
